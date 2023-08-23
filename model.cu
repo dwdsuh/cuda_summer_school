@@ -140,31 +140,29 @@ void model_forward(float *inputN, float *outputN) {
 	)
     );
   fprintf(stderr, "%d\n", __LINE__);
-
+  CHECK_CUDA(cudaDeviceSynchronize());
     conv2d(input, c1, conv0_weight, conv0_bias);
   fprintf(stderr, "%d\n", __LINE__);
+  CHECK_CUDA(cudaDeviceSynchronize());
     instancenorm2d(c1, i1, instanceNorm2d0_weight, instanceNorm2d0_bias);
   fprintf(stderr, "%d\n", __LINE__);
+  CHECK_CUDA(cudaDeviceSynchronize());
     maxpool2d(i1, m1, 2, 2);
   fprintf(stderr, "%d\n", __LINE__);
+  CHECK_CUDA(cudaDeviceSynchronize());
     relu(m1);
   fprintf(stderr, "%d\n", __LINE__);
+  CHECK_CUDA(cudaDeviceSynchronize());
     conv2d(m1, c2, conv1_weight, conv1_bias);
   fprintf(stderr, "%d\n", __LINE__);
+  CHECK_CUDA(cudaDeviceSynchronize());
     instancenorm2d(c2, i2, instanceNorm2d1_weight, instanceNorm2d1_bias);
-  fprintf(stderr, "%d\n", __LINE__);
     maxpool2d(i2, m2, 2, 2);
-  fprintf(stderr, "%d\n", __LINE__);
     relu(m2);
-  fprintf(stderr, "%d\n", __LINE__);
     linear(m2, l1, linear1_weight, linear1_bias);
-  fprintf(stderr, "%d\n", __LINE__);
     relu(l1);
-  fprintf(stderr, "%d\n", __LINE__);
     linear(l1, l2, linear2_weight, linear2_bias);
-  fprintf(stderr, "%d\n", __LINE__);
     l2->reshape({batch, 1, 1015808});
-  fprintf(stderr, "%d\n", __LINE__);
     linear(l2, output, linear3_weight, linear3_bias);
   fprintf(stderr, "%d\n", __LINE__);
 
@@ -322,12 +320,12 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   float *bias = bias_t->buf;
 
   int batch = in_t->shape[0];
-  int H_IN = weight_t->shape[2];  // in_t의 마지막 차원
-  int H_OUT = weight_t->shape[3]; // out_t의 마지막 차원
+  int H_IN = weight_t->shape[0];  // in_t의 마지막 차원
+  int H_OUT = weight_t->shape[1]; // out_t의 마지막 차원
 
   int N = in_t->get_elem() / H_IN / batch ; //=out_t->get_elem()/H_OUT
   // get_elem() already include batch
-  int n_thread = N * H_IN * batch;
+  int n_thread = N * H_OUT * batch;
   dim3 blockDim(512);
   dim3 gridDim((n_thread + 512 - 1) / 512);
   linear_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, H_IN, H_OUT, N, batch);
@@ -348,8 +346,8 @@ __global__ void maxpool2d_kernel(float *in, float *out,
       in[b * N * H_IN * W_IN + n * H_IN * W_IN + (h_out * kH) * H_IN + (w_out * kW)];
   for (int kh = 0; kh < kH; kh++)
     for (int kw = 0; kw < kW; kw++)
-      out[b * N * H_OUT * H_IN + n * H_OUT * W_OUT + h_out * W_OUT + w_out] =
-          fmaxf(out[b * N * H_OUT * H_IN + n * H_OUT * W_OUT + h_out * W_OUT + w_out],
+      out[b * N * H_OUT * W_OUT + n * H_OUT * W_OUT + h_out * W_OUT + w_out] =
+          fmaxf(out[b * N * H_OUT * W_OUT + n * H_OUT * W_OUT + h_out * W_OUT + w_out],
                 in[b * N * H_IN * W_IN + n * H_IN * W_IN + (h_out * kH + kh) * H_IN +
                    (w_out * kW + kw)]);
 }
