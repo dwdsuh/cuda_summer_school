@@ -310,31 +310,40 @@ static void instancenorm2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   instancenorm2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C, H, W, B);
 }
 
-__global__ void linear_kernel(float *in, float *out, float *weight, float *bias,
-	                      int H_IN, int H_OUT, int N, int batch){
-  int tidx = blockDim.x * blockIdx.x + threadIdx.x;
+#define BLOCK_SIZE (32)
 
-  int b = tidx / (N * H_OUT);
-  int n = (tidx / H_OUT) % N;
-  int h_out = tidx % H_OUT;
+__global__ void linear_kernel(float *in, float *out, float* weight, float* bias,
+                              int H_IN, int H_OUT, int N, int batch) {
+  int b = blockIdx.z;
+  int h_out = blockDim.x * blockIdx.x + threadIdx.x;
+  int n = blockDim.y * blockIdx.y + threadIdx.y;
 
-  if (b >= batch || n >= N || h_out >= H_OUT) return;
+  __shared__ float shrIn[BLOCK_SIZE][BLOCK_SIZE];
+  __shared__ float shrWg[BLOCK_SIZE][BLOCK_SIZE];
 
   float val = bias[h_out];
-  for (int h_in = 0; h_in < H_IN; h_in++) {
-    val += in[b * N * H_IN + n * H_IN + h_in] * weight[h_out * H_IN + h_in];
-  }
-  out[b * N * H_OUT + n * H_OUT + h_out] = val;
-  /*
-  for (int n = 0; n < N; n++) {
-    for (int h_out = 0; h_out < H_OUT; h_out++) {
-      out[n * H_OUT + h_out] = bias[h_out];
-      for (int h_in = 0; h_in < H_IN; h_in++) {
-        out[n * H_OUT + h_out] +=
-            in[n * H_IN + h_in] * weight[h_out * H_IN + h_in];
-      }
+  for (int i = 0; i < (H_IN+BLOCK_SIZE-1)/BLOCK_SIZE; i++) {
+    int offset = i * BLOCK_SIZE;
+
+    if (n < N && threadIdx.x + offset < H_IN)
+      shrIn[threadIdx.y][threadIdx.x] = in[b * N * H_IN + n * H_IN + offset + threadIdx.x];
+    else
+      shrIn[threadIdx.y][threadIdx.x] = 0;
+
+    if (h_out < H_OUT && threadIdx.y + offset < H_IN)
+      shrWg[threadIdx.y][threadIdx.x] = weight[h_out * H_IN + offset + threadIdx.y];
+    else
+      shrWg[threadIdx.y][threadIdx.x] = 0;
+
+    __syncthreads();
+    for (int j = 0 ; j <BLOCK_SIZE ; j++) {
+      val += shrIn[threadIdx.y][j] * shrWg[j][threadIdx.x];
     }
-  } */
+    __syncthreads();
+  }
+
+  if (n >= N || h_out >= H_OUT) return;
+  out[b * N * H_OUT + n * H_OUT + h_out] = val;
 }
 
 static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
@@ -350,9 +359,11 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
 
   int N = in_t->get_elem() / H_IN / batch ; //=out_t->get_elem()/H_OUT
   // get_elem() already include batch
-  int n_thread = N * H_OUT * batch;
-  dim3 blockDim(512);
-  dim3 gridDim((n_thread + 512 - 1) / 512);
+  // int n_thread = N * H_OUT * batch;
+  //  dim3 blockDim(512);
+  // dim3 gridDim((n_thread + 512 - 1) / 512);
+  dim3 gridDim((H_OUT+BLOCK_SIZE-1)/BLOCK_SIZE, (N+BLOCK_SIZE-1)/BLOCK_SIZE, batch);
+  dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
   linear_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, H_IN, H_OUT, N, batch);
 }
 
