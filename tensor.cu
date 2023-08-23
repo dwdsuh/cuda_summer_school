@@ -7,7 +7,6 @@ using namespace std;
 
 Tensor::Tensor(const vector<int> &shape_) {
   reshape(shape_);
-  //buf = (float *)malloc(n * sizeof(float));
   CHECK_CUDA(cudaMalloc(&buf, n * sizeof(float)));
 }
 
@@ -15,20 +14,11 @@ Tensor::Tensor(float *data, const vector<int> &shape_) {
   reshape(shape_);
   CHECK_CUDA(cudaMalloc(&buf, n * sizeof(float)));
   CHECK_CUDA(cudaMemcpy(buf, data, get_elem() * sizeof(float), cudaMemcpyHostToDevice));
-//  memcpy(buf, data, get_elem() * sizeof(float));
 }
 
-Tensor::~Tensor() { cudaFree(buf); }
+Tensor::~Tensor() { CHECK_CUDA(cudaFree(buf)); }
 
-void Tensor::load(const char *filename) {
-  size_t m;
-  buf = (float *)read_binary(filename, &m);
-  n = m;
-  reshape({n});
-}
-void Tensor::save(const char *filename) { write_binary(buf, filename, n); }
-
-int Tensor::get_elem() { return n; }
+size_t Tensor::get_elem() { return n; }
 
 void Tensor::reshape(const vector<int> &shape_) {
   n = 1;

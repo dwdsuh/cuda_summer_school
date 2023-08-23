@@ -3,23 +3,6 @@
 #include <vector>
 using namespace std;
 
-struct Tensor {
-  int n = 0;
-  int ndim = 0;
-  int shape[4];
-  float *buf = nullptr;
-  Tensor(const vector<int> &shape_);
-  Tensor(float *data, const vector<int> &shape_);
-
-  ~Tensor();
-
-  void load(const char *filename);
-  void save(const char *filename);
-  int get_elem();
-  void reshape(const vector<int> &shape_);
-};
-
-
 #define CHECK_CUDA(call)                                                 \
   do {                                                                   \
     cudaError_t status_ = call;                                          \
@@ -29,3 +12,16 @@ struct Tensor {
       exit(EXIT_FAILURE);                                                \
     }                                                                    \
   } while (0)
+
+struct Tensor {
+  size_t n = 0;
+  int ndim = 0;
+  int shape[4];
+  float *buf = nullptr;
+  Tensor(const vector<int> &shape_);
+  Tensor(float *data, const vector<int> &shape_);
+
+  ~Tensor();
+  size_t get_elem();
+  void reshape(const vector<int> &shape_);
+};

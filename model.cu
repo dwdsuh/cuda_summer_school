@@ -39,6 +39,7 @@ extern int N;
 //
 //      return x
 
+#define MAX_BATCH_SIZE (256)
 static Tensor *conv0_weight, *conv0_bias, *conv1_weight, *conv1_bias,
     *linear1_weight, *linear1_bias, *linear2_weight, *linear2_bias,
     *linear3_weight, *linear3_bias, *instanceNorm2d0_weight,
@@ -77,7 +78,7 @@ void initialize_model(const char *parameter_fname) {
   linear3_bias = new Tensor(buf, {2});
   buf += 2;
 
-  int batch = N;
+  int batch = std::min(N, MAX_BATCH_SIZE);
   input = new Tensor({batch, 1, 256, 256});
   output = new Tensor({batch, 2});
   c1 = new Tensor({batch, 128, 254, 254});
@@ -129,33 +130,40 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
 static void relu(Tensor *inout_t);
 
 void model_forward(float *inputN, float *outputN) {
-  int batch = N;
-    //memcpy(input->buf, inputN + 256 * 256 * idx, 256 * 256 * sizeof(float));
-  fprintf(stderr, "%d\n", __LINE__);
-    CHECK_CUDA(cudaMemcpy(
-		input->buf,
-		inputN,
-		batch * 256 * 256 * sizeof(float),
-		cudaMemcpyHostToDevice
-	)
-    );
-  fprintf(stderr, "%d\n", __LINE__);
-  CHECK_CUDA(cudaDeviceSynchronize());
+  int batch = std::min(N, MAX_BATCH_SIZE);
+  int batch_count = (N + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE; 
+  double conv2d_t = 0.0;
+  double instance_t = 0.0;
+  double maxpool2d_t = 0.0;
+  double relu_t  = 0.0;
+  double linear_t = 0.0;                 
+  double st;
+  double memcp_t = 0.0;
+  for (int idx = 0 ; idx < batch_count ; idx++) {
+    fprintf(stderr, "batch [%d]...\n", idx);
+    if ((idx + 1) == batch_count) {
+      if (N % MAX_BATCH_SIZE != 0) batch = N % MAX_BATCH_SIZE;
+      if (batch < input->shape[0]) {
+        input->shape[0] = batch;
+        output->shape[0] = batch;
+        c1->shape[0] = batch;
+        i1->shape[0] = batch;
+        m1->shape[0] = batch;
+        c2->shape[0] = batch;
+        i2->shape[0] = batch;
+        m2->shape[0] = batch;
+        l1->shape[0] = batch;
+        l2->shape[0] = batch;
+      }
+    }
+    CHECK_CUDA(cudaMemcpy(input->buf, inputN + 256 * 256 * idx * batch,
+                          256 * 256 * sizeof(float) * batch,
+                          cudaMemcpyHostToDevice));
     conv2d(input, c1, conv0_weight, conv0_bias);
-  fprintf(stderr, "%d\n", __LINE__);
-  CHECK_CUDA(cudaDeviceSynchronize());
     instancenorm2d(c1, i1, instanceNorm2d0_weight, instanceNorm2d0_bias);
-  fprintf(stderr, "%d\n", __LINE__);
-  CHECK_CUDA(cudaDeviceSynchronize());
     maxpool2d(i1, m1, 2, 2);
-  fprintf(stderr, "%d\n", __LINE__);
-  CHECK_CUDA(cudaDeviceSynchronize());
     relu(m1);
-  fprintf(stderr, "%d\n", __LINE__);
-  CHECK_CUDA(cudaDeviceSynchronize());
     conv2d(m1, c2, conv1_weight, conv1_bias);
-  fprintf(stderr, "%d\n", __LINE__);
-  CHECK_CUDA(cudaDeviceSynchronize());
     instancenorm2d(c2, i2, instanceNorm2d1_weight, instanceNorm2d1_bias);
     maxpool2d(i2, m2, 2, 2);
     relu(m2);
@@ -164,17 +172,16 @@ void model_forward(float *inputN, float *outputN) {
     linear(l1, l2, linear2_weight, linear2_bias);
     l2->reshape({batch, 1, 1015808});
     linear(l2, output, linear3_weight, linear3_bias);
-  fprintf(stderr, "%d\n", __LINE__);
-
-    //memcpy(outputN + 2 * idx, output->buf, 2 * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(
-		outputN,
-		output->buf,
-		2 * sizeof(float) * batch,
-	        cudaMemcpyDeviceToHost
-		)
-    );
-  fprintf(stderr, "%d\n", __LINE__);
+    CHECK_CUDA(cudaMemcpy(outputN, output->buf, 2 * sizeof(float) * batch,
+                          cudaMemcpyDeviceToHost));
+    outputN += 2 * batch;
+  }
+  fprintf(stderr,"conv2d: %lf\n", conv2d_t);
+  fprintf(stderr,"maxpool2d: %lf\n", maxpool2d_t);
+  fprintf(stderr,"linear: %lf\n", linear_t);
+  fprintf(stderr,"instance: %lf\n", instance_t);
+  fprintf(stderr,"relu: %lf\n", relu_t);
+  fprintf(stderr,"cudaMemcpy: %lf\n", memcp_t); 
 }
 
 __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
