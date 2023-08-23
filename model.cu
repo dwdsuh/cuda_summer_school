@@ -39,7 +39,7 @@ extern int N;
 //
 //      return x
 
-#define MAX_BATCH_SIZE (256)
+#define MAX_BATCH_SIZE (64)
 static Tensor *conv0_weight, *conv0_bias, *conv1_weight, *conv1_bias,
     *linear1_weight, *linear1_bias, *linear2_weight, *linear2_bias,
     *linear3_weight, *linear3_bias, *instanceNorm2d0_weight,
@@ -336,6 +336,7 @@ __global__ void linear_kernel(float *in, float *out, float* weight, float* bias,
       shrWg[threadIdx.y][threadIdx.x] = 0;
 
     __syncthreads();
+
     for (int j = 0 ; j <BLOCK_SIZE ; j++) {
       val += shrIn[threadIdx.y][j] * shrWg[j][threadIdx.x];
     }
