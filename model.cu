@@ -124,6 +124,9 @@ static void instancenorm2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
 static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
                    Tensor *bias_t);
 
+static void linear_redu(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
+                        Tensor *bias_t);
+
 // ReLU (inplace)
 // https://pytorch.org/docs/stable/generated/torch.nn.ReLU.html
 // size of in & out = N
@@ -364,8 +367,45 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   // dim3 gridDim((n_thread + 512 - 1) / 512);
   dim3 gridDim((H_OUT+BLOCK_SIZE-1)/BLOCK_SIZE, (N+BLOCK_SIZE-1)/BLOCK_SIZE, batch);
   dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-  fprintf(stderr,"linear H_IN: %d, H_OUT: %d, N:%d\n",H_IN, H_OUT, N);
   linear_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, H_IN, H_OUT, N, batch);
+}
+
+__global__ void linear_redu_kernel(float *in, float *out, float *weight, float *bias, int batch) {
+  const int H_IN = 1015808;
+  const int H_OUT = 2;
+  const int N = 1;
+  const int n = 0;
+  int tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  int b = tidx / H_OUT;
+  int h_out = tidx % H_OUT;
+
+  if (b >= batch || n >= N || h_out >= H_OUT) return;
+
+  float val = bias[h_out];
+  for (int h_in = 0; h_in < H_IN; h_in++) {
+   val += in[b * N * H_IN + n * H_IN + h_in] * weight[h_out * H_IN + h_in];
+  }
+  out[b * N * H_OUT + n * H_OUT + h_out] = val;
+}
+
+static void linear_redu(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
+                        Tensor *bias_t) {
+  float *in = in_t->buf;
+  float *out = out_t->buf;
+  float *weight = weight_t->buf;
+  float *bias = bias_t->buf;
+
+  int batch = in_t->shape[0];
+  int H_IN = weight_t->shape[0];  // in_t의 마지막 차원
+  int H_OUT = weight_t->shape[1]; // out_t의 마지막 차원
+
+  int N = in_t->get_elem() / H_IN / batch ; //=out_t->get_elem()/H_OUT
+  // get_elem() already include batch
+  int n_thread = N * H_OUT * batch;
+  dim3 blockDim(512);
+  dim3 gridDim((n_thread + 512 - 1) / 512);
+  linear_redu_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, batch);
 }
 
 __global__ void maxpool2d_kernel(float *in, float *out, 
