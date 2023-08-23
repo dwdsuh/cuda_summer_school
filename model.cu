@@ -203,10 +203,10 @@ void model_forward(float *inputN, float *outputN) {
 }
 
 __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
-	               int K, int C_IN, int C_OUT, int H_IN, int W_IN,
-		       int H_OUT, int W_OUT, int B){
+                              int C_IN, int C_OUT, int H_IN, int W_IN,
+                              int H_OUT, int W_OUT, int B){
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
-  
+  const int K = 3;
   int b = tidx / (C_OUT * H_OUT * W_OUT);
   int c_out = (tidx / (H_OUT * W_OUT)) % C_OUT;
   int h_out = (tidx / W_OUT) % H_OUT;
@@ -249,8 +249,7 @@ static void conv2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   dim3 blockDim(512);
   dim3 gridDim((n_thread + 511) / 512);
 
-  conv2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, K, C_IN, C_OUT, H_IN, W_IN, H_OUT, W_OUT, batch);
-
+  conv2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C_IN, C_OUT, H_IN, W_IN, H_OUT, W_OUT, batch);
 }
 
 
@@ -365,6 +364,7 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   // dim3 gridDim((n_thread + 512 - 1) / 512);
   dim3 gridDim((H_OUT+BLOCK_SIZE-1)/BLOCK_SIZE, (N+BLOCK_SIZE-1)/BLOCK_SIZE, batch);
   dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+  fprintf(stderr,"linear H_IN: %d, H_OUT: %d, N:%d\n",H_IN, H_OUT, N);
   linear_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, H_IN, H_OUT, N, batch);
 }
 
