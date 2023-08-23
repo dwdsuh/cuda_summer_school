@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
   ////////////////////////////////////////////////////////////////////
 
   double st = 0.0, et = 0.0;
-  fprintf(stderr, " Start...");
+  fprintf(stderr, " Start...\n");
 
   st = get_time();
 

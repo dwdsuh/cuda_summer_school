@@ -129,6 +129,10 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
 // size of in & out = N
 static void relu(Tensor *inout_t);
 
+#define CHECK_TIME(time_value) \
+  CHECK_CUDA(cudaDeviceSynchronize()); \
+  end_t = get_time(); time_value += end_t - start_t; start_t = end_t; \
+
 void model_forward(float *inputN, float *outputN) {
   int batch = std::min(N, MAX_BATCH_SIZE);
   int batch_count = (N + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE; 
@@ -137,8 +141,9 @@ void model_forward(float *inputN, float *outputN) {
   double maxpool2d_t = 0.0;
   double relu_t  = 0.0;
   double linear_t = 0.0;                 
-  double st;
   double memcp_t = 0.0;
+  double start_t = get_time();
+  double end_t;
   for (int idx = 0 ; idx < batch_count ; idx++) {
     fprintf(stderr, "batch [%d]...\n", idx);
     if ((idx + 1) == batch_count) {
@@ -159,21 +164,34 @@ void model_forward(float *inputN, float *outputN) {
     CHECK_CUDA(cudaMemcpy(input->buf, inputN + 256 * 256 * idx * batch,
                           256 * 256 * sizeof(float) * batch,
                           cudaMemcpyHostToDevice));
+    CHECK_TIME(memcp_t);
     conv2d(input, c1, conv0_weight, conv0_bias);
+    CHECK_TIME(conv2d_t);
     instancenorm2d(c1, i1, instanceNorm2d0_weight, instanceNorm2d0_bias);
+    CHECK_TIME(instance_t);
     maxpool2d(i1, m1, 2, 2);
+    CHECK_TIME(maxpool2d_t);
     relu(m1);
+    CHECK_TIME(relu_t);
     conv2d(m1, c2, conv1_weight, conv1_bias);
+    CHECK_TIME(conv2d_t);
     instancenorm2d(c2, i2, instanceNorm2d1_weight, instanceNorm2d1_bias);
+    CHECK_TIME(instance_t);
     maxpool2d(i2, m2, 2, 2);
+    CHECK_TIME(maxpool2d_t);
     relu(m2);
+    CHECK_TIME(relu_t);
     linear(m2, l1, linear1_weight, linear1_bias);
+    CHECK_TIME(linear_t);
     relu(l1);
+    CHECK_TIME(relu_t);
     linear(l1, l2, linear2_weight, linear2_bias);
     l2->reshape({batch, 1, 1015808});
     linear(l2, output, linear3_weight, linear3_bias);
+    CHECK_TIME(linear_t);
     CHECK_CUDA(cudaMemcpy(outputN, output->buf, 2 * sizeof(float) * batch,
                           cudaMemcpyDeviceToHost));
+    CHECK_TIME(memcp_t);
     outputN += 2 * batch;
   }
   fprintf(stderr,"conv2d: %lf\n", conv2d_t);
@@ -198,16 +216,16 @@ __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
 
   out += b * C_OUT * H_OUT * W_OUT;
   in += b * C_IN * H_IN * W_IN;
-  out[c_out * H_OUT * W_OUT + h_out * W_OUT + w_out] = bias[c_out];
+  float val = bias[c_out];
   for (int c_in = 0; c_in < C_IN; c_in++) {
     for (int kh = 0; kh < K; kh++) {
       for (int kw = 0; kw < K; kw++) {
-        out[c_out * H_OUT * W_OUT + h_out * W_OUT + w_out] +=
-            in[c_in * H_IN * W_IN + (h_out + kh) * W_IN + (w_out + kw)] *
+        val += in[c_in * H_IN * W_IN + (h_out + kh) * W_IN + (w_out + kw)] *
             weight[c_out * C_IN * K * K + c_in * K * K + kh * K + kw];
       }
     }
   }
+  out[c_out * H_OUT * W_OUT + h_out * W_OUT + w_out] = val;
 }
 
 static void conv2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
@@ -302,11 +320,11 @@ __global__ void linear_kernel(float *in, float *out, float *weight, float *bias,
 
   if (b >= batch || n >= N || h_out >= H_OUT) return;
 
-  out[b * N * H_OUT + n * H_OUT + h_out] = bias[h_out];
+  float val = bias[h_out];
   for (int h_in = 0; h_in < H_IN; h_in++) {
-    out[b * N * H_OUT + n * H_OUT + h_out] +=
-        in[b * N * H_IN + n * H_IN + h_in] * weight[h_out * H_IN + h_in];
+    val += in[b * N * H_IN + n * H_IN + h_in] * weight[h_out * H_IN + h_in];
   }
+  out[b * N * H_OUT + n * H_OUT + h_out] = val;
   /*
   for (int n = 0; n < N; n++) {
     for (int h_out = 0; h_out < H_OUT; h_out++) {
@@ -349,14 +367,13 @@ __global__ void maxpool2d_kernel(float *in, float *out,
 
   if (b >= batch || n >= N || h_out >= H_OUT || w_out >= W_OUT) return;
 
-  out[b * N * H_OUT * W_OUT + n * H_OUT * W_OUT + h_out * W_OUT + w_out] =
-      in[b * N * H_IN * W_IN + n * H_IN * W_IN + (h_out * kH) * H_IN + (w_out * kW)];
+  float val = in[b * N * H_IN * W_IN + n * H_IN * W_IN + (h_out * kH) * H_IN + (w_out * kW)];
   for (int kh = 0; kh < kH; kh++)
     for (int kw = 0; kw < kW; kw++)
-      out[b * N * H_OUT * W_OUT + n * H_OUT * W_OUT + h_out * W_OUT + w_out] =
-          fmaxf(out[b * N * H_OUT * W_OUT + n * H_OUT * W_OUT + h_out * W_OUT + w_out],
+      val = fmaxf(val,
                 in[b * N * H_IN * W_IN + n * H_IN * W_IN + (h_out * kH + kh) * H_IN +
                    (w_out * kW + kw)]);
+  out[b * N * H_OUT * W_OUT + n * H_OUT * W_OUT + h_out * W_OUT + w_out] = val;
 }
 
 static void maxpool2d(Tensor *in_t, Tensor *out_t, int kH, int kW) {
