@@ -139,6 +139,7 @@ static void relu(Tensor *inout_t);
 void model_forward(float *inputN, float *outputN) {
   int batch = std::min(N, MAX_BATCH_SIZE);
   int batch_count = (N + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE; 
+  int count = 0;
   double conv2d_t = 0.0;
   double instance_t = 0.0;
   double maxpool2d_t = 0.0;
@@ -147,8 +148,8 @@ void model_forward(float *inputN, float *outputN) {
   double memcp_t = 0.0;
   double start_t = get_time();
   double end_t;
+  fprintf(stderr, "\ntotal count: %d\n", N);
   for (int idx = 0 ; idx < batch_count ; idx++) {
-    fprintf(stderr, "batch [%d]...\n", idx);
     if ((idx + 1) == batch_count) {
       if (N % MAX_BATCH_SIZE != 0) batch = N % MAX_BATCH_SIZE;
       if (batch < input->shape[0]) {
@@ -196,7 +197,10 @@ void model_forward(float *inputN, float *outputN) {
                           cudaMemcpyDeviceToHost));
     CHECK_TIME(memcp_t);
     outputN += 2 * batch;
+    count += batch;
+    fprintf(stderr, "batch [%d/%d]...\n", count, N);
   }
+
   fprintf(stderr,"conv2d: %lf\n", conv2d_t);
   fprintf(stderr,"maxpool2d: %lf\n", maxpool2d_t);
   fprintf(stderr,"linear: %lf\n", linear_t);
