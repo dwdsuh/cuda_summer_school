@@ -212,8 +212,8 @@ void model_forward(float *inputN, float *outputN) {
 __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
                               int C_IN, int C_OUT, int H_IN, int W_IN,
                               int H_OUT, int W_OUT, int B){
-  int b = blockIdx.y / C_OUT;
-  int c_out = blockIdx.y % C_OUT;
+  int b = blockIdx.z;
+  int c_out = blockIdx.y;
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
   int h_out = tidx / W_OUT;
   int w_out = tidx % W_OUT;
@@ -270,7 +270,7 @@ static void conv2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   //dim3 gridDim((n_thread + 1023) / 1024);
 
   dim3 blockDim(1024);
-  dim3 gridDim(((H_OUT * W_OUT) + 1023) / 1024, batch * C_OUT);
+  dim3 gridDim(((H_OUT * W_OUT) + 1023) / 1024, C_OUT, batch);
   conv2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C_IN, C_OUT, H_IN, W_IN, H_OUT, W_OUT, batch);
 }
 
