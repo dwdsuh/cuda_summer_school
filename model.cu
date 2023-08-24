@@ -39,7 +39,7 @@ extern int N;
 //
 //      return x
 
-#define MAX_BATCH_SIZE (64)
+#define MAX_BATCH_SIZE (256)
 static Tensor *conv0_weight, *conv0_bias, *conv1_weight, *conv1_bias,
     *linear1_weight, *linear1_bias, *linear2_weight, *linear2_bias,
     *linear3_weight, *linear3_bias, *instanceNorm2d0_weight,
@@ -125,7 +125,7 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
                    Tensor *bias_t);
 
 static void linear_redu(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
-                        Tensor *bias_t);
+                        Tensor *bias_t, Tensor *redu_buf_t);
 
 // ReLU (inplace)
 // https://pytorch.org/docs/stable/generated/torch.nn.ReLU.html
@@ -191,7 +191,7 @@ void model_forward(float *inputN, float *outputN) {
     CHECK_TIME(relu_t);
     linear(l1, l2, linear2_weight, linear2_bias);
     l2->reshape({batch, 1, 1015808});
-    linear(l2, output, linear3_weight, linear3_bias);
+    linear_redu(l2, output, linear3_weight, linear3_bias, l1);
     CHECK_TIME(linear_t);
     CHECK_CUDA(cudaMemcpy(outputN, output->buf, 2 * sizeof(float) * batch,
                           cudaMemcpyDeviceToHost));
@@ -218,7 +218,7 @@ __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
   int h_out = tidx / W_OUT;
   int w_out = tidx % W_OUT;
   const int K = 3;
-  __shared__ float shrWg[128 * 9];
+  __shared__ float shrWg[2048];
 
   float val = bias[c_out];
   if (c_out * C_IN * K * K + threadIdx.x < C_IN * C_OUT * K * K)
@@ -456,31 +456,56 @@ static void linear(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   linear_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, H_IN, H_OUT, N, batch);
 }
 
-__global__ void linear_redu_kernel(float *in, float *out, float *weight, float *bias, int batch) {
-  const int H_IN = 1015808;
+__global__ void linear_redu_kernel_1(float *in, float *out, float *weight, int H_IN) {
+  int tidx = threadIdx.x;
+  int h_in = blockDim.x * blockIdx.x + tidx;
+  int b = blockIdx.z;
   const int H_OUT = 2;
   const int N = 1;
   const int n = 0;
-  int tidx = blockDim.x * blockIdx.x + threadIdx.x;
+  int h_out = blockIdx.y;
+  int block_size = gridDim.x;
+  __shared__ float L[1024];
+  L[tidx] = 0;
+  if (h_in >= H_IN) return;
 
-  int b = tidx / H_OUT;
-  int h_out = tidx % H_OUT;
-
-  if (b >= batch || n >= N || h_out >= H_OUT) return;
-
-  float val = bias[h_out];
-  for (int h_in = 0; h_in < H_IN; h_in++) {
-   val += in[b * N * H_IN + n * H_IN + h_in] * weight[h_out * H_IN + h_in];
+  L[tidx] = in[b * N * H_IN + n * H_IN + h_in] * weight[h_out * H_IN + h_in];
+  __syncthreads();
+  for (int stride = 512 ; stride > 0 ; stride /= 2) {
+    if (tidx < stride) L[tidx] += L[tidx + stride];
+    __syncthreads();
   }
-  out[b * N * H_OUT + n * H_OUT + h_out] = val;
+
+  if (tidx == 0) out[block_size * (b * H_OUT + h_out) + blockIdx.x] = L[0];
+}
+
+__global__ void linear_redu_kernel_2(float *in, float *out, float *bias, const int block_size) {
+  const int tidx = threadIdx.x;
+  const int h_out = blockIdx.y;
+  const int b = blockIdx.z;
+  const int H_OUT = 2;
+  const int n = 0;
+  const int N = 1;
+  __shared__ float L[1024];
+  L[tidx] = 0;
+  if (tidx >= block_size) return;
+  L[tidx] = in[block_size * (b * H_OUT + h_out) + tidx];
+  __syncthreads();
+  for (int stride = 512 ; stride > 0 ; stride /= 2) {
+    if (tidx < stride) L[tidx] += L[tidx + stride];
+    __syncthreads();
+  }
+
+  if (tidx == 0) out[b * N * H_OUT + n * H_OUT + h_out] = L[0] + bias[h_out];
 }
 
 static void linear_redu(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
-                        Tensor *bias_t) {
+                        Tensor *bias_t, Tensor *redu_buf_t) {
   float *in = in_t->buf;
   float *out = out_t->buf;
   float *weight = weight_t->buf;
   float *bias = bias_t->buf;
+  float *buf = redu_buf_t->buf;
 
   int batch = in_t->shape[0];
   int H_IN = weight_t->shape[0];  // in_t의 마지막 차원
@@ -488,10 +513,12 @@ static void linear_redu(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
 
   int N = in_t->get_elem() / H_IN / batch ; //=out_t->get_elem()/H_OUT
   // get_elem() already include batch
-  int n_thread = N * H_OUT * batch;
-  dim3 blockDim(512);
-  dim3 gridDim((n_thread + 512 - 1) / 512);
-  linear_redu_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, batch);
+  dim3 blockDim(1024);
+  dim3 gridDim((H_IN+1023)/1024, H_OUT, batch);
+  linear_redu_kernel_1<<<gridDim, blockDim>>>(in, buf, weight, H_IN);
+  int block_size = gridDim.x;
+  dim3 gridDim2(1, H_OUT, batch);
+  linear_redu_kernel_2<<<gridDim2, blockDim>>>(buf, out, bias, block_size);
 }
 
 __global__ void maxpool2d_kernel(float *in, float *out, 
