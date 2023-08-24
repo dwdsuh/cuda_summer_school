@@ -179,12 +179,12 @@ void model_forward(float *inputN, float *outputN) {
 
 __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
                               int C_IN, int C_OUT, int H_IN, int W_IN,
-                              int H_OUT, int W_OUT, int B){
+                              int H_OUT, int W_OUT, int WP, int B){
   int b = blockIdx.z;
   int c_out = blockIdx.y;
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
-  int h_out = tidx / W_OUT;
-  int w_out = tidx % W_OUT;
+  int h_out = tidx / WP;
+  int w_out = tidx % WP;
   const int K = 3;
   __shared__ float shrWg[2048];
 
@@ -202,7 +202,7 @@ __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
   }
   __syncthreads();
 
-  if (tidx >= H_OUT * W_OUT) return;
+  if (h_out >= H_OUT || w_out >= W_OUT) return;
   out += b * C_OUT * H_OUT * W_OUT;
   in += b * C_IN * H_IN * W_IN;
   for (int c_in = 0; c_in < C_IN; c_in++) {
@@ -236,10 +236,16 @@ static void conv2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   //  int n_thread = batch * C_OUT * H_OUT * W_OUTW;
   //  dim3 blockDim(1024);
   //dim3 gridDim((n_thread + 1023) / 1024);
-
+  int n_thread = 256*256;
+  int WP = 256 ;
+  if (H_OUT == 125) {
+    n_thread = 128*128;
+    WP = 128;
+  }
+  if (H_OUT == 125) n_thread = 256*256; 
   dim3 blockDim(1024);
-  dim3 gridDim(((H_OUT * W_OUT) + 1023) / 1024, C_OUT, batch);
-  conv2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C_IN, C_OUT, H_IN, W_IN, H_OUT, W_OUT, batch);
+  dim3 gridDim((n_thread + 1023) / 1024, C_OUT, batch);
+  conv2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C_IN, C_OUT, H_IN, W_IN, H_OUT, W_OUT, WP, batch);
 }
 
 
