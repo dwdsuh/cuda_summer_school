@@ -311,6 +311,62 @@ __global__ void instancenorm2d_kernel(float *in, float *out, float *weight, floa
   }
 }
 
+__global__ void instancenorm2d_kernel_reduc(float *in, float *out, float *weight, float *bias, int C, int H, int W, int B, float *E, float *V){
+    int tidx = blockIdx.x * blockDim.x + threadIdx.x;
+    int b = tidx / (C * H * W);
+    int c = (tidx / (H * W)) % C;
+    int h = (tidx / W) % H;
+    int w = tidx % W;
+
+    out[b * C * H * W + c * H * W + h * W + w] = (in[b * C * H * W + c * H * W + h * W + w] - E[b * C + c]) / sqrt(V[b * C + c] + 1e-5) * weight[c] + bias[c];
+}
+
+
+__global__ void calc_mean_variance_kernel(float *in, float *E, float *V, int C, int H, int W, int B){
+
+    unsigned int tid = threadIdx.x;
+    unsigned int R = blockIdx.x;
+    unsigned int BLOCK_SIZE = blockDim.x; // n_thread (1024) 
+    int n_array = H * W;
+
+    //int size_shm = B * C * BLOCK_SIZE;
+    //extern __shared__ float L[];
+    __shared__ float L[1024];
+
+    // calc mean 
+    float e = 0.0;
+    for (int i = tid; i < n_array; i+= BLOCK_SIZE){
+	e += in[R * H * W + i];
+    }
+    L[tid] = e;
+    __syncthreads();
+
+    for (int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2){
+	if (tid < stride) L[tid] += L[tid + stride];
+	__syncthreads();
+    }
+
+    if (tid == 0) E[R] = L[tid] / (H * W);
+    __syncthreads();
+
+    // calc variance
+    __shared__ float M[1024];
+
+    float v = 0.0;
+    for (int i = tid; i < n_array; i+=BLOCK_SIZE){
+	v += (in[R * H * W + i] - E[R]) * (in[R * H * W + i] - E[R]);
+    }
+
+    M[tid] = v;
+    __syncthreads();
+
+    for (int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2){
+	if (tid < stride) M[tid] += M[tid + stride];
+	__syncthreads();
+    }
+    if (tid == 0) V[R] = M[tid] / (H * W);
+    __syncthreads();
+}
 
 
 static void instancenorm2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
@@ -324,11 +380,22 @@ static void instancenorm2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   int C = in_t->shape[1]; //=out_t->shape[0];
   int H = in_t->shape[2]; //=out_t->shape[1];
   int W = in_t->shape[3]; //=out_t->shape[2];
-  int n_thread = C * B;
-  dim3 blockDim(512);
-  dim3 gridDim((n_thread + 512 -1) / 512);
 
-  instancenorm2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C, H, W, B);
+  float *E, *V;
+  CHECK_CUDA(cudaMalloc(&E, sizeof(float) * B * C));
+  CHECK_CUDA(cudaMalloc(&V, sizeof(float) * B * C));
+  // kernel function to get E, V
+  dim3 gridDim(B * C);
+  dim3 blockDim(1024);
+  calc_mean_variance_kernel<<<gridDim, blockDim>>>(in, E, V, C, H, W, B);
+
+  //apply instancenorm with E, V
+
+  int n_thread = B * C * H * W;
+  dim3 block_dim(512);
+  dim3 grid_dim((n_thread + 512 -1) / 512);
+
+  instancenorm2d_kernel_reduc<<<grid_dim, block_dim>>>(in, out, weight, bias, C, H, W, B, E, V);
 }
 
 #define BLOCK_SIZE (32)
