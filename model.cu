@@ -236,13 +236,8 @@ static void conv2d(Tensor *in_t, Tensor *out_t, Tensor *weight_t,
   //  int n_thread = batch * C_OUT * H_OUT * W_OUTW;
   //  dim3 blockDim(1024);
   //dim3 gridDim((n_thread + 1023) / 1024);
-  int n_thread = 256*256;
-  int WP = 256 ;
-  if (H_OUT == 125) {
-    n_thread = 128*128;
-    WP = 128;
-  }
-  if (H_OUT == 125) n_thread = 256*256; 
+  int WP = (H_OUT == 125) ? 128 : 256;
+  int n_thread = WP*WP;
   dim3 blockDim(1024);
   dim3 gridDim((n_thread + 1023) / 1024, C_OUT, batch);
   conv2d_kernel<<<gridDim, blockDim>>>(in, out, weight, bias, C_IN, C_OUT, H_IN, W_IN, H_OUT, W_OUT, WP, batch);
