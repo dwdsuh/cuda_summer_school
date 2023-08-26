@@ -139,6 +139,16 @@ static void relu(Tensor *inout_t);
 void model_forward(float *inputN, float *outputN) {
   int batch = std::min(N, MAX_BATCH_SIZE);
   int batch_count = (N + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE; 
+  int count = 0;
+  double conv2d_t = 0.0;
+  double instance_t = 0.0;
+  double maxpool2d_t = 0.0;
+  double relu_t  = 0.0;
+  double linear_t = 0.0;                 
+  double memcp_t = 0.0;
+  double start_t = get_time();
+  double end_t;
+  fprintf(stderr, "\ntotal count: %d\n", N);
   for (int idx = 0 ; idx < batch_count ; idx++) {
     if ((idx + 1) == batch_count) {
       if (N % MAX_BATCH_SIZE != 0) batch = N % MAX_BATCH_SIZE;
@@ -158,23 +168,45 @@ void model_forward(float *inputN, float *outputN) {
     CHECK_CUDA(cudaMemcpy(input->buf, inputN + 256 * 256 * idx * batch,
                           256 * 256 * sizeof(float) * batch,
                           cudaMemcpyHostToDevice));
+    CHECK_TIME(memcp_t);
     conv2d(input, c1, conv0_weight, conv0_bias);
+    CHECK_TIME(conv2d_t);
     instancenorm2d(c1, i1, instanceNorm2d0_weight, instanceNorm2d0_bias);
+    CHECK_TIME(instance_t);
     maxpool2d(i1, m1, 2, 2);
+    CHECK_TIME(maxpool2d_t);
     relu(m1);
+    CHECK_TIME(relu_t);
     conv2d(m1, c2, conv1_weight, conv1_bias);
+    CHECK_TIME(conv2d_t);
     instancenorm2d(c2, i2, instanceNorm2d1_weight, instanceNorm2d1_bias);
+    CHECK_TIME(instance_t);
     maxpool2d(i2, m2, 2, 2);
+    CHECK_TIME(maxpool2d_t);
     relu(m2);
+    CHECK_TIME(relu_t);
     linear(m2, l1, linear1_weight, linear1_bias);
+    CHECK_TIME(linear_t);
     relu(l1);
+    CHECK_TIME(relu_t);
     linear(l1, l2, linear2_weight, linear2_bias);
     l2->reshape({batch, 1, 1015808});
     linear_redu(l2, output, linear3_weight, linear3_bias, l1);
+    CHECK_TIME(linear_t);
     CHECK_CUDA(cudaMemcpy(outputN, output->buf, 2 * sizeof(float) * batch,
                           cudaMemcpyDeviceToHost));
+    CHECK_TIME(memcp_t);
     outputN += 2 * batch;
+    count += batch;
+    fprintf(stderr, "batch [%d/%d]...\n", count, N);
   }
+
+  fprintf(stderr,"conv2d: %lf\n", conv2d_t);
+  fprintf(stderr,"maxpool2d: %lf\n", maxpool2d_t);
+  fprintf(stderr,"linear: %lf\n", linear_t);
+  fprintf(stderr,"instance: %lf\n", instance_t);
+  fprintf(stderr,"relu: %lf\n", relu_t);
+  fprintf(stderr,"cudaMemcpy: %lf\n", memcp_t); 
 }
 
 __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
@@ -186,9 +218,8 @@ __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
   int h_out = tidx / WP;
   int w_out = tidx % WP;
   const int K = 3;
-  __shared__ float shrWg[2048];
+  __shared__ float shrWg[128*9];
 
-  float val = bias[c_out];
   if (c_out * C_IN * K * K + threadIdx.x < C_IN * C_OUT * K * K)
     shrWg[threadIdx.x] = weight[c_out * C_IN * K * K + threadIdx.x];
   else
@@ -203,6 +234,7 @@ __global__ void conv2d_kernel(float *in, float *out, float *weight, float *bias,
   __syncthreads();
 
   if (h_out >= H_OUT || w_out >= W_OUT) return;
+  float val = bias[c_out];
   out += b * C_OUT * H_OUT * W_OUT;
   in += b * C_IN * H_IN * W_IN;
   for (int c_in = 0; c_in < C_IN; c_in++) {
